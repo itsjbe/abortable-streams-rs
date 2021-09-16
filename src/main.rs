@@ -2,6 +2,7 @@ use std::error::Error;
 use std::time::{Duration, Instant};
 
 use async_std as a_std;
+use futures::future::{AbortHandle, AbortRegistration, Abortable};
 use futures::{StreamExt, TryStreamExt};
 use lazy_static::lazy_static;
 use rand::distributions::Uniform;
@@ -13,8 +14,8 @@ lazy_static! {
     static ref START_TIME: Instant = Instant::now();
 }
 
-const N: usize = 10;
-const BF: usize = 2;
+const N: usize = 20;
+const BF: usize = 4;
 
 #[async_std::main]
 async fn main() {
@@ -29,10 +30,15 @@ async fn main() {
 }
 
 async fn main_iter() {
-    let mut values = get_pages_futures().buffer_unordered(BF).take(N);
+    let (ab, ab_handle) = AbortHandle::new_pair();
+    let mut values = Abortable::new(get_pages_futures().buffer_unordered(BF).take(N), ab_handle);
 
     while let Some(p) = values.next().await
     {
+        if values.is_aborted()
+        {
+            break;
+        }
         match p
         {
             Ok(v) =>
@@ -41,13 +47,16 @@ async fn main_iter() {
             }
             Err(e) =>
             {
-                println!("error: {}", e)
+                println!("error: {}", e);
+
+                println!("calling abort");
+                ab.abort()
             }
         }
     }
 }
 
-async fn get_n_pages_buffer_unordered(n: usize, buf_factor: usize) -> Vec<Result<Vec<usize>>> {
+async fn get_n_pages_buffer_unordered(n: usize, buf_factor: usize) -> Vec<Result<u64>> {
     get_pages_futures()
         .take(n)
         .buffer_unordered(buf_factor)
@@ -56,11 +65,12 @@ async fn get_n_pages_buffer_unordered(n: usize, buf_factor: usize) -> Vec<Result
 }
 
 fn get_pages_futures(
-) -> impl a_std::stream::Stream<Item = impl a_std::future::Future<Output = Result<Vec<usize>>>> {
-    futures::stream::iter(0..).map(|i| get_page(i))
+) -> impl a_std::stream::Stream<Item = impl a_std::future::Future<Output = Result<u64>>> {
+    let stream = futures::stream::iter(0..).map(|i| get_page(i));
+    return stream;
 }
 
-async fn get_page(i: usize) -> Result<Vec<usize>> {
+async fn get_page(i: usize) -> Result<u64> {
     let millis = Uniform::from(0..10).sample(&mut rand::thread_rng());
     println!(
         "[{}] # get_page({}) will complete in {} ms",
@@ -84,5 +94,5 @@ async fn get_page(i: usize) -> Result<Vec<usize>> {
         i
     );
 
-    Ok((10 * i..10 * (i + 1)).collect())
+    Ok(millis)
 }
